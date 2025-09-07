@@ -24,7 +24,8 @@ class TrafficSteeringEnv(NsOranEnv):
         self.columns_reward = ['DRB.UEThpDl.UEID', 'nrCellId']
         # In the traffic steering use case, the action is a combination between 
         n_gnbs = 7  # scenario one has always 7 gnbs 
-        n_actions_ue = 7 # each UE can connect to a gNB identified by ID (from 2 to 8), 0 is No Action
+        # change actions by JLEE 0907
+        n_actions_ue = 8 # each UE can connect to a gNB identified by ID (from 2 to 8), 0 is No Action
         # obs_space size: (# ues_per_gnb * # n_gnbs, # observation_columns + timestamp = 1)
         self.observation_space = spaces.Box(shape=(self.scenario_configuration['ues']*n_gnbs,len(self.columns_state)+1), low=-np.inf, high=np.inf, dtype=np.float64)
         self.action_space = spaces.MultiDiscrete([n_actions_ue] * self.scenario_configuration['ues'] *  n_gnbs)
@@ -47,7 +48,8 @@ class TrafficSteeringEnv(NsOranEnv):
         for ueId, targetCellId in enumerate(action):
             if targetCellId != 0: # and 
                 # Once we are in this condition, we need to transform the action from the one of gym to the one of ns-O-RAN
-                action_list.append((ueId + 1, targetCellId + 2))
+                # Update by JLee 
+                action_list.append((ueId + 1, targetCellId + 1))
         if self.verbose:
             logging.debug(f'Action list {action_list}')
         return action_list
