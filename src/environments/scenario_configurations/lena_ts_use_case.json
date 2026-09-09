@@ -1,0 +1,9 @@
+{
+  "ues": [3],
+  "simTime": [2.0],
+  "indicationPeriodicity": [0.1],
+  "e2modenr": [1],
+  "enableE2FileLogging": [1],
+  "ReportingEnabled": [0],
+  "useSemaphores": [0]
+}

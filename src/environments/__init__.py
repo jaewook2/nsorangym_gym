@@ -14,5 +14,11 @@ register(
 )
 
 
+register(
+     id="LenaTrafficSteeringEnv",
+     entry_point="environments.lena_ts_env:LenaTrafficSteeringEnv",
+)
+
+
 # test episode of 1 step each
 # episodes = 1e6
