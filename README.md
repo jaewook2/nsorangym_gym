@@ -9,23 +9,21 @@ Gymnasium wrapper for ns-O-RAN style control (file + semaphore) against ns-3.
 | `main` | Baseline (mmWave/LTE Traffic Steering / Energy Saving) |
 | `5gnr_gym` | **5G LENA (NR)** integration work with `NSORAN_5GLENA` |
 
-## LENA / 5G NR notes (`5gnr_gym`)
+## Modes (ns-3 LENA)
 
-Target ns-3 stack:
+| Mode | Flags | Behavior |
+|------|--------|----------|
+| **Logging only** (default) | `useSemaphores=0`, empty `controlFileName` | Writes `uemeas`/`cellmeas` (and traces). No gym needed. |
+| **Gym** | `useSemaphores=1` + `controlFileName=ts_actions_for_ns3.csv` | POSIX semaphores + control CSV; needs `nsorangym_gym` agent. |
 
-- ns-3: https://github.com/jaewook2/NSORAN_NS3 (`ns-3.46`)
-- NR module: https://github.com/jaewook2/NSORAN_5GLENA (`5g-lena-v4.1.1-gym`)
-- ORAN interface: https://github.com/jaewook2/nsoran_update
+Logging-only example:
 
-Control path (same as wineslab):
+```bash
+cd ~/ns-3-dev
+./ns3 run "lena-oran-test --simTime=2 --useSemaphores=0"
+```
 
-1. Gym writes actions to `ts_actions_for_ns3.csv` (`timestamp,ueId,nrCellId`)
-2. NR `NrGnbNetDevice::ReadControlFile` parses the file
-3. Applying HO inside ns-3 is **stubbed / commented** for now (parse + log only)
-4. KPM / semaphore sync with LENA file names is WIP
-
-Stub environment: `LenaTrafficSteeringEnv` (see `src/environments/lena_ts_env.py`).
-
+Gym mode hangs in `sem_wait` until the Python env posts the control semaphore.
 ## Install
 
 ```bash
