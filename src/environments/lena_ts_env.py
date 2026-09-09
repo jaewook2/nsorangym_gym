@@ -23,6 +23,7 @@ class LenaTrafficSteeringEnv(NsOranEnv):
         scenario: str = "lena-oran-test",
         n_gnbs: int = 1,
         verbose: bool = False,
+        skip_configuration: bool = True,
     ):
         super().__init__(
             ns3_path=ns3_path,
@@ -30,6 +31,7 @@ class LenaTrafficSteeringEnv(NsOranEnv):
             scenario_configuration=scenario_configuration,
             output_folder=output_folder,
             optimized=optimized,
+            skip_configuration=skip_configuration,
             control_header=["timestamp", "ueId", "nrCellId"],
             log_file="TsActions.txt",
             control_file="ts_actions_for_ns3.csv",

@@ -24,6 +24,11 @@ if __name__ == "__main__":
     parser.add_argument("--optimized", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
+        "--configure",
+        action="store_true",
+        help="Run ns-3 configure/build (slow). Default skips configure.",
+    )
+    parser.add_argument(
         "--scenario",
         type=str,
         default="lena-oran-test",
@@ -42,7 +47,9 @@ if __name__ == "__main__":
         optimized=args.optimized,
         scenario=args.scenario,
         verbose=args.verbose,
+        skip_configuration=not args.configure,
     )
     print("Note: full step loop needs semaphore + LENA KPM wiring; env object created OK.")
     print(f"  control_file={env.control_file} scenario={env.scenario}")
+    print(f"  script_executable={getattr(env, 'script_executable', None)}")
     print(f"  action_space={env.action_space} observation_space={env.observation_space}")
