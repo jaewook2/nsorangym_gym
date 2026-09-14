@@ -1,0 +1,5 @@
+examples/output_*/
+__pycache__/
+*.pyc
+.venv/
+venv/

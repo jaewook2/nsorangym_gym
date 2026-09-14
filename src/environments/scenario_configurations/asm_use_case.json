@@ -1,0 +1,21 @@
+{
+  "configuration": [0],
+  "bufferSize": [10],
+  "rlcAmEnabled": [1],
+  "nMmWaveEnb": [2],
+  "gnbDistance": [200],
+  "nUe": [30],
+  "ues": [30],
+  "rateHigh": ["10Mbps"],
+  "rateMid": ["2Mbps"],
+  "rateLow": ["500kbps"],
+  "simTime": [10],
+  "indicationPeriodicity": [0.1],
+  "useSemaphores": [1],
+  "controlMode": ["asm"],
+  "controlFileName": ["asm_actions_for_ns3.csv"],
+  "controlFileNameAsm": ["asm_actions_for_ns3.csv"],
+  "scheduleAsmControl": [0],
+  "flushAsmControlFile": [0],
+  "asmMode": [1]
+}

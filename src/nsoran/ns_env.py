@@ -37,7 +37,8 @@ class NsOranEnv(gym.Env):
     datalake: SQLiteDatabaseAPI
 
     def __init__(self, render_mode:str=None, ns3_path:str=None, scenario:str=None, scenario_configuration:dict=None, output_folder:str=None,
-                 optimized:bool=True, skip_configuration:bool=False, control_header: list = [], log_file: str = '', control_file: str = ''):
+                 optimized:bool=True, skip_configuration:bool=False, control_header: list = [], log_file: str = '', control_file: str = '',
+                 control_channels: list | None = None):
         """Initialize environment 
         Args:
             render_mode (str): Select one of the render modes available.
@@ -65,6 +66,7 @@ class NsOranEnv(gym.Env):
         self.control_header = control_header
         self.log_file = log_file
         self.control_file = control_file
+        self.control_channels = control_channels
 
         self.is_open = False
         self.return_info = False
@@ -178,9 +180,11 @@ class NsOranEnv(gym.Env):
 
         # Build ns-3
         # We don't care about the progress bar of the SimulationRunner, thus we use subprocess.run and wait the build to end
-        j_argument = ['-j', str(os.cpu_count())] # if this makes problems just cut it
-        subprocess.run(['python3', build_program] + j_argument + ['build'],
-                                         cwd=self.ns3_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        skip_build = os.environ.get("NS3_SKIP_BUILD", "").lower() in ("1", "true", "yes")
+        if not skip_build:
+            j_argument = ['-j', str(os.cpu_count())] # if this makes problems just cut it
+            subprocess.run(['python3', build_program] + j_argument + ['build'],
+                                             cwd=self.ns3_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         
     def start_sim(self):
         """
@@ -216,16 +220,18 @@ class NsOranEnv(gym.Env):
 
         ### Create Datalake and Action Controller ###
 
-        if not self.log_file:
-            raise ValueError('Missing the log file path.')
+        if self.control_channels:
+            self.action_controller = ActionController(self.sim_path, channels=self.control_channels)
+        else:
+            if not self.log_file:
+                raise ValueError('Missing the log file path.')
 
-        if not self.control_file:
-            raise ValueError('Missing the control file path.')
+            if not self.control_file:
+                raise ValueError('Missing the control file path.')
 
-        if not self.control_header:
-            raise ValueError('Missing the list of values to perform control.')
-        print(self.sim_path)
-        self.action_controller = ActionController(self.sim_path, self.log_file, self.control_file, self.control_header)
+            if not self.control_header:
+                raise ValueError('Missing the list of values to perform control.')
+            self.action_controller = ActionController(self.sim_path, self.log_file, self.control_file, self.control_header)
         self.datalake = SQLiteDatabaseAPI(self.sim_path, num_ues_gnb=self.sim_result['params']['ues'], debug=False)
         self._init_datalake_usecase()
 
@@ -365,9 +371,14 @@ class NsOranEnv(gym.Env):
         if not self.is_simulation_over():
             # Take a step in the environment based on the given action
             actions = self._compute_action(action)
-            
-            # Update the environment state and calculate the reward
-            self.action_controller.create_control_action(self.last_timestamp, actions)
+            if isinstance(actions, dict):
+                kinds = [kind for kind in ("es", "ts") if kind in actions]
+                kinds.extend(kind for kind in actions if kind not in kinds)
+                for kind in kinds:
+                    self.action_controller.create_control_action(
+                        self.last_timestamp, actions[kind], kind=kind)
+            else:
+                self.action_controller.create_control_action(self.last_timestamp, actions)
             # the action was written: notify the environment
             self.controlSemaphore.release()
             
