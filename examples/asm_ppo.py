@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Train PPO on AsmEnv until the policy settles, then compare baselines.
 
-Two techniques (separate action spaces, same reward/state):
-  on_off  ASM 1 vs 6 per mmWave cell
-  duty    ASM 1-6 per mmWave cell
+Two techniques (separate action spaces, same state/reward):
+  on_off  ASM 1 vs 6 per mmWave cell, no sequential constraint
+  asm     ASM 1-6 per mmWave cell, each step may change by at most ±1
 """
 import argparse
 import json
@@ -57,13 +57,26 @@ def parse_args():
             "../src/environments/scenario_configurations/asm_use_case.json",
         ),
     )
-    parser.add_argument("--kind", choices=("on_off", "duty", "both"), default="both")
-    parser.add_argument("--output_folder", default="examples/output_asm_ppo_v3")
-    parser.add_argument("--ns3_path", default="/home/ionlab/ns-o-ran-ns3-mmwave")
+    parser.add_argument("--kind", choices=("on_off", "asm", "duty", "both"), default="both")
+    parser.add_argument("--output_folder", default="examples/output_asm_s1_onoff_overlap")
+    parser.add_argument(
+        "--omega",
+        type=float,
+        default=0.0,
+        help="Reward mix: 0=EE only, 1=satP5 only (default 0).",
+    )
+    parser.add_argument(
+        "--ns3_path",
+        default=os.environ.get(
+            "NS3_PATH",
+            "/home/pknu-boo/nsorangym_mmwave_test_0914/nsorangym_mmwave",
+        ),
+    )
     parser.add_argument("--simTime", type=float, default=None)
     parser.add_argument("--total_timesteps", type=int, default=256)
     parser.add_argument("--n_steps", type=int, default=32)
     parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--n_eval_episodes", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--until_converge", action="store_true", default=True)
@@ -78,6 +91,22 @@ def parse_args():
     parser.add_argument("--optimized", action="store_true")
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument("--skip_train", action="store_true")
+    parser.add_argument(
+        "--init_all_on",
+        action="store_true",
+        help="After warmup, leave every cell ON instead of a per-policy start mode.",
+    )
+    parser.add_argument(
+        "--left_on_bonus",
+        type=float,
+        default=0.0,
+        help="Added to the training reward when the leftmost mmWave cell is ON. Eval stays 0.",
+    )
+    parser.add_argument(
+        "--net_arch",
+        default="64,64",
+        help="Hidden widths for both the policy and value MLPs, comma-separated.",
+    )
     return parser.parse_args()
 
 
@@ -89,16 +118,27 @@ def load_config(args):
     return cfg
 
 
-def make_env(args, cfg, log_dir, kind=None):
-    kind = kind or args.kind
+def _normalize_kind(kind: str) -> str:
+    if kind in ("duty", "asm_ppo", "asm"):
+        return "asm"
+    if kind in ("onoff", "onoff_ppo", "on_off"):
+        return "on_off"
+    return kind
+
+
+def make_env(args, cfg, log_dir, kind=None, rank: int = 0, init_modes=None, left_on_bonus: float = 0.0):
+    kind = _normalize_kind(kind or args.kind)
     def _init():
         env = AsmEnv(
             ns3_path=args.ns3_path,
             scenario_configuration=cfg,
-            output_folder=os.path.join(log_dir, "ns3"),
+            output_folder=os.path.join(log_dir, "ns3", f"env{rank}"),
             optimized=args.optimized,
             skip_configuration=args.skip_configuration,
             kind=kind,
+            omega=args.omega,
+            init_modes=init_modes,
+            left_on_bonus=left_on_bonus,
         )
         env = SafeNs3Wrapper(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -124,24 +164,103 @@ def vec_metrics(vec) -> dict:
     return unwrap_metrics(env)
 
 
+class SequentialRandom:
+    """Unconstrained 0/1 for on_off; adjacent ASM walk for asm."""
+
+    def __init__(self, n_gnbs: int, n_choices: int):
+        self.n_gnbs = n_gnbs
+        self.n_choices = n_choices
+        self.prev = None
+
+    def reset(self):
+        self.prev = None
+
+    def __call__(self, _obs, rng):
+        if self.n_choices <= 2:
+            action = rng.integers(0, self.n_choices, size=self.n_gnbs, dtype=np.int64)
+            if self.n_gnbs >= 2 and np.all(action == self.n_choices - 1):
+                action[int(rng.integers(0, self.n_gnbs))] = 0
+            return action
+        if self.prev is None:
+            self.prev = np.zeros(self.n_gnbs, dtype=np.int64)
+            return self.prev.copy()
+        nxt = np.array(
+            [
+                int(np.clip(int(prev) + int(rng.integers(-1, 2)), 0, self.n_choices - 1))
+                for prev in self.prev
+            ],
+            dtype=np.int64,
+        )
+        if self.n_gnbs >= 2 and np.all(nxt == self.n_choices - 1):
+            nxt[int(rng.integers(0, self.n_gnbs))] = self.n_choices - 2
+        self.prev = nxt
+        return nxt.copy()
+
+
 def policy_actions(n_gnbs: int, kind: str):
+    kind = _normalize_kind(kind)
     n_choices = 2 if kind == "on_off" else 6
     off_idx = n_choices - 1
     all_on = np.zeros(n_gnbs, dtype=np.int64)
-    all_off = np.full(n_gnbs, off_idx, dtype=np.int64)
     policies = {
         "all_on": lambda _obs, _rng: all_on.copy(),
-        "all_off": lambda _obs, _rng: all_off.copy(),
     }
     if n_gnbs == 2:
         left = np.array([0, off_idx], dtype=np.int64)
         right = np.array([off_idx, 0], dtype=np.int64)
         policies["one_on_cell2"] = lambda _obs, _rng: left.copy()
         policies["one_on_cell3"] = lambda _obs, _rng: right.copy()
-    policies["random"] = lambda _obs, rng: rng.integers(
-        0, n_choices, size=n_gnbs, dtype=np.int64
-    )
+        if kind == "asm":
+            policies["asm2_4"] = lambda _obs, _rng: np.array([1, 3], dtype=np.int64)
+            policies["asm4_2"] = lambda _obs, _rng: np.array([3, 1], dtype=np.int64)
+    elif n_gnbs == 3:
+        off = off_idx
+        policies["left_only"] = lambda _obs, _rng, off=off: np.array([0, off, off], dtype=np.int64)
+        policies["center_only"] = lambda _obs, _rng, off=off: np.array([off, 0, off], dtype=np.int64)
+        policies["right_only"] = lambda _obs, _rng, off=off: np.array([off, off, 0], dtype=np.int64)
+        policies["sides_on"] = lambda _obs, _rng, off=off: np.array([0, off, 0], dtype=np.int64)
+        policies["left_center"] = lambda _obs, _rng, off=off: np.array([0, 0, off], dtype=np.int64)
+        policies["right_center"] = lambda _obs, _rng, off=off: np.array([off, 0, 0], dtype=np.int64)
+    policies["random"] = SequentialRandom(n_gnbs, n_choices)
     return policies
+
+
+def policy_init_modes(name: str, n_gnbs: int, kind: str):
+    """ASM modes applied once after warmup, before the scored episode."""
+    kind = _normalize_kind(kind)
+    off = 6 if kind == "on_off" else 6
+    on = 1
+    if name == "ppo":
+        if kind == "on_off" and n_gnbs == 3:
+            return [off, off, on]
+        if kind == "on_off" and n_gnbs == 2:
+            return [on, off]
+        if kind == "asm" and n_gnbs == 2:
+            return [2, 4]
+        return [on] * n_gnbs
+    if name in ("all_on", "random"):
+        return [on] * n_gnbs
+    if n_gnbs == 2:
+        if name == "one_on_cell2":
+            return [on, off]
+        if name == "one_on_cell3":
+            return [off, on]
+        if name == "asm2_4":
+            return [2, 4]
+        if name == "asm4_2":
+            return [4, 2]
+    if n_gnbs == 3:
+        table = {
+            "left_only": [on, off, off],
+            "center_only": [off, on, off],
+            "right_only": [off, off, on],
+            "sides_on": [on, off, on],
+            "left_center": [on, on, off],
+            "right_center": [off, on, on],
+        }
+        if name in table:
+            return table[name]
+    return [on] * n_gnbs
 
 
 def summarize_steps(rows: list[dict]) -> dict:
@@ -160,11 +279,11 @@ def summarize_steps(rows: list[dict]) -> dict:
     return out
 
 
-def run_policy(name, choose_action, args, cfg, log_dir, n_episodes, seed, kind):
+def run_policy(name, choose_action, args, cfg, log_dir, n_episodes, seed, kind, init_modes=None):
     from stable_baselines3.common.monitor import Monitor
 
     os.makedirs(log_dir, exist_ok=True)
-    env = Monitor(make_env(args, cfg, log_dir, kind)(), log_dir)
+    env = Monitor(make_env(args, cfg, log_dir, kind, init_modes=init_modes)(), log_dir)
     rng = np.random.default_rng(seed)
     rows = []
     ep_rewards = []
@@ -172,6 +291,8 @@ def run_policy(name, choose_action, args, cfg, log_dir, n_episodes, seed, kind):
     try:
         for ep in range(n_episodes):
             obs, _info = env.reset()
+            if hasattr(choose_action, "reset"):
+                choose_action.reset()
             done = False
             step = 0
             ep_r = 0.0
@@ -212,7 +333,7 @@ def run_policy(name, choose_action, args, cfg, log_dir, n_episodes, seed, kind):
     return rows, summary
 
 
-def eval_ppo(args, cfg, model_path, stats_path, log_dir, n_episodes, kind):
+def eval_ppo(args, cfg, model_path, stats_path, log_dir, n_episodes, kind, init_modes=None):
     from stable_baselines3 import PPO
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -220,7 +341,7 @@ def eval_ppo(args, cfg, model_path, stats_path, log_dir, n_episodes, kind):
     os.makedirs(log_dir, exist_ok=True)
 
     def _monitored():
-        return Monitor(make_env(args, cfg, log_dir, kind)(), log_dir)
+        return Monitor(make_env(args, cfg, log_dir, kind, init_modes=init_modes)(), log_dir)
 
     vec = DummyVecEnv([_monitored])
     vec = VecNormalize.load(stats_path, vec)
@@ -277,7 +398,10 @@ def summarize_monitor(log_dir):
     import glob
     import pandas as pd
 
-    paths = sorted(glob.glob(os.path.join(log_dir, "*monitor*.csv")), key=os.path.getmtime)
+    paths = sorted(
+        glob.glob(os.path.join(log_dir, "**", "*monitor*.csv"), recursive=True),
+        key=os.path.getmtime,
+    )
     if not paths:
         return {"n_episodes": 0}
     frames = []
@@ -304,17 +428,43 @@ def train_ppo(args, cfg, log_dir, kind):
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import CheckpointCallback
     from stable_baselines3.common.monitor import Monitor
-    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
     os.makedirs(log_dir, exist_ok=True)
     model_path = os.path.join(log_dir, f"ppo_{kind}.zip")
     stats_path = os.path.join(log_dir, "vecnormalize.pkl")
+    n_envs = max(1, int(args.n_envs))
+    rollout = args.n_steps * n_envs
+    if rollout % args.batch_size != 0:
+        raise ValueError(
+            f"n_steps*n_envs={rollout} must be divisible by batch_size={args.batch_size}"
+        )
 
-    def _monitored():
-        return Monitor(make_env(args, cfg, log_dir, kind)(), log_dir)
+    def _worker(rank: int):
+        def _init():
+            mon_dir = os.path.join(log_dir, f"env{rank}")
+            os.makedirs(mon_dir, exist_ok=True)
+            env = make_env(
+                args,
+                cfg,
+                log_dir,
+                kind,
+                rank=rank,
+                init_modes=None
+                if args.init_all_on
+                else policy_init_modes("ppo", int(cfg.get("nMmWaveEnb", [2])[0]), kind),
+                left_on_bonus=float(args.left_on_bonus),
+            )()
+            return Monitor(env, mon_dir)
+        return _init
 
-    vec = DummyVecEnv([_monitored])
+    if n_envs == 1:
+        vec = DummyVecEnv([_worker(0)])
+    else:
+        vec = SubprocVecEnv([_worker(i) for i in range(n_envs)], start_method="fork")
     vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+    hidden = [int(part) for part in str(args.net_arch).split(",") if part.strip()]
+    policy_kwargs = dict(net_arch=dict(pi=hidden, vf=hidden))
     model = PPO(
         "MlpPolicy",
         vec,
@@ -325,6 +475,7 @@ def train_ppo(args, cfg, log_dir, kind):
         max_grad_norm=0.5,
         seed=args.seed,
         verbose=1,
+        policy_kwargs=policy_kwargs,
         tensorboard_log=os.path.join(args.output_folder, "tb", kind),
     )
     ckpt = CheckpointCallback(
@@ -335,8 +486,8 @@ def train_ppo(args, cfg, log_dir, kind):
     budget = args.max_timesteps if args.until_converge else args.total_timesteps
     chunk = args.chunk_timesteps if args.until_converge else args.total_timesteps
     print(
-        f"\n===== train PPO {kind} budget={budget} chunk={chunk} "
-        f"until_converge={args.until_converge} =====",
+        f"\n===== train PPO {kind} n_envs={n_envs} budget={budget} chunk={chunk} "
+        f"rollout={rollout} net={hidden} omega={args.omega} until_converge={args.until_converge} =====",
         flush=True,
     )
     t0 = time.time()
@@ -422,7 +573,7 @@ def main():
     os.environ.setdefault("NS3_SKIP_BUILD", "1")
     cfg = load_config(args)
     os.makedirs(args.output_folder, exist_ok=True)
-    kinds = ("on_off", "duty") if args.kind == "both" else (args.kind,)
+    kinds = ("on_off", "asm") if args.kind == "both" else (_normalize_kind(args.kind),)
     all_summaries = {}
 
     for kind in kinds:
@@ -456,6 +607,7 @@ def main():
                 args.n_eval_episodes,
                 args.seed,
                 kind,
+                init_modes=None if args.init_all_on else policy_init_modes(name, n_gnbs, kind),
             )
             all_rows.extend(rows)
             summaries[name] = summary
@@ -469,6 +621,7 @@ def main():
                 os.path.join(kind_dir, "eval_ppo"),
                 args.n_eval_episodes,
                 kind,
+                init_modes=None if args.init_all_on else policy_init_modes("ppo", n_gnbs, kind),
             )
             all_rows.extend(rows)
             summaries["ppo"] = summary

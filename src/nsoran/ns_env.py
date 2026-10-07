@@ -254,18 +254,19 @@ class NsOranEnv(gym.Env):
         
         self.sim_result['meta']['start_time'] = time.time()
         
-        self.sim_process = subprocess.Popen(command, cwd=self.sim_path, env=self.environment,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        # Register the stdout and stderr file descriptors with the selector
-        self.selector = selectors.DefaultSelector()
-
-        # Set non-blocking mode for stdout and stderr
-        self._set_nonblocking(self.sim_process.stdout)
-        self._set_nonblocking(self.sim_process.stderr)
-
-        self.selector.register(self.sim_process.stdout, selectors.EVENT_READ)
-        self.selector.register(self.sim_process.stderr, selectors.EVENT_READ)
+        stdout_path = os.path.join(self.sim_path, 'stdout')
+        stderr_path = os.path.join(self.sim_path, 'stderr')
+        self._ns3_stdout = open(stdout_path, 'w')
+        self._ns3_stderr = open(stderr_path, 'w')
+        self.sim_process = subprocess.Popen(
+            command,
+            cwd=self.sim_path,
+            env=self.environment,
+            stdout=self._ns3_stdout,
+            stderr=self._ns3_stderr,
+            text=True,
+        )
+        self.selector = None
         ### End create simulation ###
 
     @staticmethod
@@ -277,21 +278,26 @@ class NsOranEnv(gym.Env):
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
         
     def read_streams(self):
+        if getattr(self, "selector", None) is None:
+            for handle in (getattr(self, "_ns3_stdout", None), getattr(self, "_ns3_stderr", None)):
+                if handle:
+                    handle.flush()
+            return
         events = self.selector.select(timeout=0)  # Non-blocking check
         
         stdout_file_path = os.path.join(self.sim_path, 'stdout')
         stderr_file_path = os.path.join(self.sim_path, 'stderr')
         
-        with open(stdout_file_path, 'w+') as stdout_file, open(
-                stderr_file_path, 'w+') as stderr_file:
+        with open(stdout_file_path, 'a') as stdout_file, open(
+                stderr_file_path, 'a') as stderr_file:
             for key, _ in events:
                 data = key.fileobj.read()
                 if not data:
                     continue               
                 if key.fileobj is self.sim_process.stdout:
-                    stdout_file.write(data.strip())
+                    stdout_file.write(data)
                 elif key.fileobj is self.sim_process.stderr:
-                    stderr_file.write(data.strip())
+                    stderr_file.write(data)
     
     def is_simulation_over(self) -> bool:
         """Checks whether the simulation is over or not.
@@ -479,6 +485,11 @@ class NsOranEnv(gym.Env):
             # TODO save sim_result in the folder
             self.metricsReadySemaphore.release()
             self.sim_process.kill()
+            for handle in (getattr(self, "_ns3_stdout", None), getattr(self, "_ns3_stderr", None)):
+                if handle:
+                    handle.close()
+            self._ns3_stdout = None
+            self._ns3_stderr = None
             self.controlSemaphore.unlink()
             self.metricsReadySemaphore.unlink()
             self.is_open = False 

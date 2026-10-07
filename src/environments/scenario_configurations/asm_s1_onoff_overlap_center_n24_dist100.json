@@ -1,0 +1,80 @@
+{
+  "configuration": [
+    0
+  ],
+  "bufferSize": [
+    10
+  ],
+  "rlcAmEnabled": [
+    0
+  ],
+  "nMmWaveEnb": [
+    3
+  ],
+  "gnbDistance": [
+    100
+  ],
+  "mmWaveLteZOffset": [
+    0.5
+  ],
+  "ueClusterSidesOnly": [
+    1
+  ],
+  "nUe": [
+    24
+  ],
+  "ues": [
+    24
+  ],
+  "uePlacement": [
+    "cluster"
+  ],
+  "ueClusterRadius": [
+    20
+  ],
+  "rateLeft": [
+    "2Mbps"
+  ],
+  "rateRight": [
+    "600kbps"
+  ],
+  "rateHigh": [
+    "10Mbps"
+  ],
+  "rateMid": [
+    "2Mbps"
+  ],
+  "rateLow": [
+    "500kbps"
+  ],
+  "lteBandwidthRbs": [
+    6
+  ],
+  "simTime": [
+    3
+  ],
+  "indicationPeriodicity": [
+    0.1
+  ],
+  "useSemaphores": [
+    1
+  ],
+  "controlMode": [
+    "asm"
+  ],
+  "controlFileName": [
+    "asm_actions_for_ns3.csv"
+  ],
+  "controlFileNameAsm": [
+    "asm_actions_for_ns3.csv"
+  ],
+  "scheduleAsmControl": [
+    0
+  ],
+  "flushAsmControlFile": [
+    0
+  ],
+  "asmMode": [
+    1
+  ]
+}

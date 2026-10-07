@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Toy Gym loop: random per-gNB ASM on scenario-asm-verify.
+"""Toy Gym loop: per-gNB ASM on scenario-asm-verify.
 
-Topology: LTE eNB at the origin, one mmWave gNB on each side, 10 UEs around
-each gNB. Each step samples ASM 1-6 independently for cell 2 and cell 3.
+Default layout: UEs clustered at each mmWave gNB. --kind on_off jumps
+ASM 1/6 with no sequential constraint; --kind asm walks ASM 1-6 by ±1.
 """
 import argparse
 import json
@@ -35,7 +35,14 @@ def main():
         ),
     )
     parser.add_argument("--output_folder", default="output_asm")
-    parser.add_argument("--ns3_path", default="/home/ionlab/ns-o-ran-ns3-mmwave")
+    parser.add_argument(
+        "--ns3_path",
+        default=os.environ.get(
+            "NS3_PATH",
+            "/home/pknu-boo/nsorangym_mmwave_test_0914/nsorangym_mmwave",
+        ),
+    )
+    parser.add_argument("--kind", choices=("on_off", "asm", "duty"), default="asm")
     parser.add_argument("--num_steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--optimized", action="store_true")
@@ -53,19 +60,30 @@ def main():
         optimized=args.optimized,
         skip_configuration=args.skip_configuration,
         verbose=True,
+        kind=args.kind,
     )
     rng = np.random.default_rng(args.seed)
     print("Launch reset ", end="", flush=True)
     obs, info = env.reset()
     print("done", flush=True)
     print(f"First obs {dict(zip(env.COLUMNS, obs.tolist()))}")
-    print(f"cells {env.mmwave_cell_ids} uesPerGnb={env.n_ues} sim_path {env.sim_path}")
+    print(f"kind={env.kind} sequential={env.sequential} cells {env.mmwave_cell_ids} "
+          f"ues={env.n_ues} offeredKbps={env.offered_kbps} sim_path {env.sim_path}")
 
     matches = 0
     evaluated = 0
+    prev_modes = None
     try:
         for step in range(1, args.num_steps + 1):
-            action = rng.integers(0, 6, size=env.n_gnbs)
+            if env.kind == "on_off":
+                action = rng.integers(0, 2, size=env.n_gnbs)
+            elif prev_modes is None:
+                action = np.zeros(env.n_gnbs, dtype=int)
+            else:
+                action = np.array(
+                    [int(np.clip(int(m) - 1 + int(rng.integers(-1, 2)), 0, 5)) for m in prev_modes],
+                    dtype=int,
+                )
             modes = env._modes_from_action(action)
             pretty = ", ".join(
                 f"cell {cid} ASM {mode} ({MODE_NAME[mode]})"
@@ -95,9 +113,10 @@ def main():
                 f"pMmw={metrics.get('pMmw', 0):.2f} "
                 f"pLte={metrics.get('pLte', 0):.2f} "
                 f"satP5={metrics.get('satP5', 0):.3f} "
-                f"reward={reward:.3f} match={cell_ok}"
+                f"reward={reward:.3f} match={cell_ok} bothOff={metrics.get('bothOff')}"
             )
             print(f"  terminated={terminated} truncated={truncated} ts={env.last_timestamp}")
+            prev_modes = modes
             if terminated or truncated:
                 break
     finally:

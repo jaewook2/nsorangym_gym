@@ -69,10 +69,10 @@ class ActionController():
             raise ValueError(f"Unknown control channel '{kind}'. Known: {list(self.channels)}")
         channel = self.channels[kind]
         with open(path.join(self.directory, channel["log"]), "a") as logFile:
-            with open(path.join(self.directory, channel["file"]), "a") as file:
+            with open(path.join(self.directory, channel["file"]), "w") as file:
                 for action in actions:
                     control_action = f"{timestamp},{','.join(map(str, action))}\n"
                     file.write(control_action)
                     logFile.write(control_action)
-                    file.flush()
-                    logFile.flush()
+                file.flush()
+                logFile.flush()
