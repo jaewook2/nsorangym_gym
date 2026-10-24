@@ -2,8 +2,10 @@
 """Train PPO on AsmEnv until the policy settles, then compare baselines.
 
 Two techniques (separate action spaces, same state/reward):
-  on_off  ASM 1 vs 6 per mmWave cell, no sequential constraint
-  asm     ASM 1-6 per mmWave cell, each step may change by at most ±1
+  on_off     mode 1 vs 6 per mmWave cell, no sequential constraint
+  duty_mode  modes 1-6 per mmWave cell, each step may change by at most ±1.
+             duty is a previous name for this symbol-duty controller.
+  asm        target Active, ASM1, ASM2, ASM3, ASM4, OFF. ns-3 transitions.
 """
 import argparse
 import json
@@ -57,7 +59,12 @@ def parse_args():
             "../src/environments/scenario_configurations/asm_use_case.json",
         ),
     )
-    parser.add_argument("--kind", choices=("on_off", "asm", "duty", "both"), default="both")
+    parser.add_argument(
+        "--kind",
+        choices=("on_off", "duty_mode", "asm", "duty", "both"),
+        default="both",
+        help="duty_mode is the symbol-duty controller. asm is the component state machine. duty is a previous name for duty_mode.",
+    )
     parser.add_argument("--output_folder", default="examples/output_asm_s1_onoff_overlap")
     parser.add_argument(
         "--omega",
@@ -119,7 +126,9 @@ def load_config(args):
 
 
 def _normalize_kind(kind: str) -> str:
-    if kind in ("duty", "asm_ppo", "asm"):
+    if kind in ("duty_mode", "duty", "asm_ppo"):
+        return "duty_mode"
+    if kind == "asm":
         return "asm"
     if kind in ("onoff", "onoff_ppo", "on_off"):
         return "on_off"
@@ -164,8 +173,22 @@ def vec_metrics(vec) -> dict:
     return unwrap_metrics(env)
 
 
+class UniformRandom:
+    """Any target mode, including both cells OFF. Used by asm."""
+
+    def __init__(self, n_gnbs: int, n_choices: int):
+        self.n_gnbs = n_gnbs
+        self.n_choices = n_choices
+
+    def reset(self):
+        return None
+
+    def __call__(self, _obs, rng):
+        return rng.integers(0, self.n_choices, size=self.n_gnbs, dtype=np.int64)
+
+
 class SequentialRandom:
-    """Unconstrained 0/1 for on_off; adjacent ASM walk for asm."""
+    """Unconstrained 0/1 for on_off; adjacent walk for duty_mode."""
 
     def __init__(self, n_gnbs: int, n_choices: int):
         self.n_gnbs = n_gnbs
@@ -210,7 +233,7 @@ def policy_actions(n_gnbs: int, kind: str):
         right = np.array([off_idx, 0], dtype=np.int64)
         policies["one_on_cell2"] = lambda _obs, _rng: left.copy()
         policies["one_on_cell3"] = lambda _obs, _rng: right.copy()
-        if kind == "asm":
+        if kind == "duty_mode":
             policies["asm2_4"] = lambda _obs, _rng: np.array([1, 3], dtype=np.int64)
             policies["asm4_2"] = lambda _obs, _rng: np.array([3, 1], dtype=np.int64)
     elif n_gnbs == 3:
@@ -221,7 +244,10 @@ def policy_actions(n_gnbs: int, kind: str):
         policies["sides_on"] = lambda _obs, _rng, off=off: np.array([0, off, 0], dtype=np.int64)
         policies["left_center"] = lambda _obs, _rng, off=off: np.array([0, 0, off], dtype=np.int64)
         policies["right_center"] = lambda _obs, _rng, off=off: np.array([off, 0, 0], dtype=np.int64)
-    policies["random"] = SequentialRandom(n_gnbs, n_choices)
+    if kind == "asm":
+        policies["random"] = UniformRandom(n_gnbs, n_choices)
+    else:
+        policies["random"] = SequentialRandom(n_gnbs, n_choices)
     return policies
 
 
@@ -235,7 +261,7 @@ def policy_init_modes(name: str, n_gnbs: int, kind: str):
             return [off, off, on]
         if kind == "on_off" and n_gnbs == 2:
             return [on, off]
-        if kind == "asm" and n_gnbs == 2:
+        if kind == "duty_mode" and n_gnbs == 2:
             return [2, 4]
         return [on] * n_gnbs
     if name in ("all_on", "random"):
@@ -424,7 +450,7 @@ def summarize_monitor(log_dir):
     }
 
 
-def train_ppo(args, cfg, log_dir, kind):
+def train_ppo(args, cfg, log_dir, kind, resume_from=None, resume_vecnormalize=None):
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import CheckpointCallback
     from stable_baselines3.common.monitor import Monitor
@@ -462,26 +488,44 @@ def train_ppo(args, cfg, log_dir, kind):
         vec = DummyVecEnv([_worker(0)])
     else:
         vec = SubprocVecEnv([_worker(i) for i in range(n_envs)], start_method="fork")
-    vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+    if resume_vecnormalize and os.path.isfile(resume_vecnormalize):
+        vec = VecNormalize.load(resume_vecnormalize, vec)
+        vec.training = True
+        print(f"loaded vecnormalize {resume_vecnormalize}", flush=True)
+    else:
+        vec = VecNormalize(vec, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0)
+        if resume_from:
+            print(
+                "no saved observation normalization; stats restart while policy weights resume",
+                flush=True,
+            )
     hidden = [int(part) for part in str(args.net_arch).split(",") if part.strip()]
     policy_kwargs = dict(net_arch=dict(pi=hidden, vf=hidden))
-    model = PPO(
-        "MlpPolicy",
-        vec,
-        n_steps=args.n_steps,
-        batch_size=args.batch_size,
-        learning_rate=3e-4,
-        ent_coef=0.01,
-        max_grad_norm=0.5,
-        seed=args.seed,
-        verbose=1,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=os.path.join(args.output_folder, "tb", kind),
-    )
+    if resume_from:
+        model = PPO.load(resume_from, env=vec)
+        print(
+            f"resume {resume_from} num_timesteps={model.num_timesteps}",
+            flush=True,
+        )
+    else:
+        model = PPO(
+            "MlpPolicy",
+            vec,
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            learning_rate=3e-4,
+            ent_coef=0.01,
+            max_grad_norm=0.5,
+            seed=args.seed,
+            verbose=1,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=os.path.join(args.output_folder, "tb", kind),
+        )
     ckpt = CheckpointCallback(
         save_freq=max(args.n_steps, 64),
         save_path=os.path.join(log_dir, "checkpoints"),
         name_prefix=f"ppo_{kind}",
+        save_vecnormalize=True,
     )
     budget = args.max_timesteps if args.until_converge else args.total_timesteps
     chunk = args.chunk_timesteps if args.until_converge else args.total_timesteps
@@ -491,10 +535,10 @@ def train_ppo(args, cfg, log_dir, kind):
         flush=True,
     )
     t0 = time.time()
-    elapsed = 0
+    elapsed = int(model.num_timesteps) if resume_from else 0
     plateau_hits = 0
     prev_last10 = None
-    first = True
+    first = not bool(resume_from)
     converged = False
     while elapsed < budget:
         n = min(chunk, budget - elapsed)
@@ -573,7 +617,7 @@ def main():
     os.environ.setdefault("NS3_SKIP_BUILD", "1")
     cfg = load_config(args)
     os.makedirs(args.output_folder, exist_ok=True)
-    kinds = ("on_off", "asm") if args.kind == "both" else (_normalize_kind(args.kind),)
+    kinds = ("on_off", "duty_mode") if args.kind == "both" else (_normalize_kind(args.kind),)
     all_summaries = {}
 
     for kind in kinds:

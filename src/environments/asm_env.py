@@ -21,18 +21,22 @@ class AsmEnv(NsOranEnv):
     PRB usage is not in the observation: mmWave DU KPMs stay 0 in this stack.
 
     Kinds:
-      on_off  action 0/1 -> ASM 1 / ASM 6, no sequential constraint
-      asm     action 0-5 -> ASM 1-6, each step may change by at most ±1
-      duty    alias of asm
+      on_off     action 0/1 -> mode 1 / mode 6, no sequential constraint
+      duty_mode  action 0-5 -> duty modes 1-6, each step may change by at most ±1.
+                 Symbol duty is 100/75/50/25/0%, and mode 6 turns the cell off.
+                 duty is a previous name for duty_mode.
+      asm        action 0-5 -> target Active, ASM1, ASM2, ASM3, ASM4, OFF.
+                 ns-3 applies the target only while Stable. Direct jumps.
+                 Both cells may be OFF.
 
-    Both mmWave cells cannot be ASM 6 at once: the heavier (or last-on)
-    cell is forced to stay on (ASM 1 for on_off, ASM 5 if sequential).
+    on_off and duty_mode cannot turn every mmWave cell off at once: the heavier
+    (or last-on) cell is forced to stay on.
 
     Reward:
       r = [(1-omega)*EE_norm + omega*sat_p5] * (1-C_trans) * (1-beta*lteUse)
           * (1-bothOffPenalty if all cells ASM 6)
       omega=0 is EE only (satP5 still logged, not in r).
-    C_trans: ASM mean of per-cell 0 stay / 0.1 duty / 0.3 off / 0.5 on.
+    C_trans: duty_mode mean of per-cell 0 stay / 0.1 duty change / 0.3 off / 0.5 on.
              on_off skips C_trans.
     Reset holds all mmWave cells at ASM 1 for warmup_s (0.5s) so traffic
     is up before PPO or any baseline acts; simTime is extended by that.
@@ -55,9 +59,10 @@ class AsmEnv(NsOranEnv):
         "on_off": "on_off",
         "onoff": "on_off",
         "onoff_ppo": "on_off",
+        "duty_mode": "duty_mode",
+        "asm_ppo": "duty_mode",
+        "duty": "duty_mode",
         "asm": "asm",
-        "asm_ppo": "asm",
-        "duty": "asm",
     }
 
     def __init__(self, ns3_path: str, scenario_configuration: dict, output_folder: str,
@@ -74,6 +79,9 @@ class AsmEnv(NsOranEnv):
         cfg["nMmWaveEnb"] = [n_gnb]
         cfg["ues"] = n_ue
         cfg["nUe"] = n_ue
+        normalized_kind = self.KIND_ALIASES.get(str(kind), str(kind))
+        if normalized_kind == "asm":
+            cfg["asmStateMachine"] = [1]
         cfg.setdefault("controlMode", ["asm"])
         cfg.setdefault("controlFileName", ["asm_actions_for_ns3.csv"])
         cfg.setdefault("controlFileNameAsm", ["asm_actions_for_ns3.csv"])
@@ -119,22 +127,40 @@ class AsmEnv(NsOranEnv):
         self.beta = float(np.clip(beta, 0.0, 1.0))
         self.both_off_penalty = float(np.clip(both_off_penalty, 0.0, 1.0))
         self.kind = self.KIND_ALIASES.get(str(kind), str(kind))
-        if self.kind not in ("on_off", "asm"):
+        if self.kind not in ("on_off", "duty_mode", "asm"):
             raise ValueError(f"unknown ASM kind {kind}")
-        self.sequential = bool(self.kind == "asm") if sequential is None else bool(sequential)
+        self.sequential = (
+            bool(self.kind == "duty_mode") if sequential is None else bool(sequential)
+        )
+        if self.kind == "asm":
+            self.both_off_penalty = 0.0
         self.prev_modes = {}
         self.offered_kbps = self._offered_from_cfg(cfg, self.n_gnbs, self.n_ues)
         lte_rbs = int(self._cfg_first(cfg, "lteBandwidthRbs", 6))
         self.lte_cap_kbps = self.LTE_CAP_PER_100RB_KBPS * (lte_rbs / 100.0)
         max_rlc = float(int(self._cfg_first(cfg, "bufferSize", 10))) * 1024.0 * 1024.0
         self.rlc_busy_bytes = max(50_000.0, max_rlc * 0.01)
-        self.p_mmw_both_on = self.n_gnbs * (self.P_STATIC + self.P_TX)
+        if self.kind == "asm":
+            tx_dbm = float(self._cfg_first(cfg, "txPower", 30.0))
+            tx_w = 10 ** ((tx_dbm - 30.0) / 10.0)
+            active_w = (
+                tx_w
+                + float(self._cfg_first(cfg, "asmRfPower", 0.0))
+                + float(self._cfg_first(cfg, "asmBbPower", 0.0))
+                + float(self._cfg_first(cfg, "asmControlPower", 0.0))
+            )
+            self.p_mmw_both_on = self.n_gnbs * active_w
+        else:
+            self.p_mmw_both_on = self.n_gnbs * (self.P_STATIC + self.P_TX)
         self.p_lte_idle = self.P_LTE_STATIC
         self.p_ref = self.p_mmw_both_on + self.p_lte_idle
         self.ee_ref = self.offered_kbps / self.p_ref
         state = []
         for cid in self.mmwave_cell_ids:
             state.extend(f"asm{cid}_{mode}" for mode in range(1, 7))
+            if self.kind == "asm":
+                state.extend((f"phase{cid}_stable", f"phase{cid}_deact", f"phase{cid}_wake"))
+                state.extend(f"target{cid}_{mode}" for mode in range(1, 7))
             state.extend((f"nUeFrac{cid}", f"offeredFrac{cid}", f"satMean{cid}",
                           f"rlcFrac{cid}"))
         state.extend(("nUeFracLte", "lteFrac", "lteDuty", "appNorm", "satMean", "satP5",
@@ -288,6 +314,8 @@ class AsmEnv(NsOranEnv):
                 hi = min(6, prev + 1)
                 applied.append(int(np.clip(req, lo, hi)))
             requested = applied
+        if self.kind == "asm":
+            return requested
         return self._prevent_both_off(requested)
 
     def _compute_action(self, action) -> list[tuple]:
@@ -319,6 +347,18 @@ class AsmEnv(NsOranEnv):
                 except (KeyError, TypeError, ValueError):
                     continue
         return applied
+
+    def _parse_asm_state(self, raw: str) -> dict[int, tuple[int, int]]:
+        state = {}
+        for part in (raw or "").split(";"):
+            bits = part.split(":")
+            if len(bits) < 3:
+                continue
+            try:
+                state[int(bits[0])] = (int(float(bits[1])), int(float(bits[2])))
+            except ValueError:
+                continue
+        return state
 
     def _parse_tput_modes(self, raw: str) -> dict[int, int]:
         modes = {}
@@ -389,6 +429,24 @@ class AsmEnv(NsOranEnv):
             parsed.append((ts, row))
         return [row for ts, row in parsed if ts == latest_ms]
 
+    def _read_kpm_asm(self):
+        """Per-cell ASM KPMs from du-cell-*.txt. Power is read once per cell."""
+        modes = {}
+        state = {}
+        power = 0.0
+        for cell_id in self.mmwave_cell_ids:
+            rows = self._read_latest_du_rows(cell_id)
+            if not rows or "ASM.Mode" not in rows[0]:
+                return None
+            head = rows[0]
+            mode = int(self._row_float(head, "ASM.Mode"))
+            phase = int(self._row_float(head, "ASM.Phase"))
+            target = int(self._row_float(head, "ASM.Target"))
+            modes[cell_id] = mode
+            state[cell_id] = (phase, target if target else mode)
+            power += self._row_float(head, "ASM.PowerW")
+        return modes, state, power
+
     def _du_occupancy(self, cell_id: int) -> tuple[float, float]:
         rows = self._read_latest_du_rows(cell_id)
         if not rows:
@@ -450,6 +508,12 @@ class AsmEnv(NsOranEnv):
         row = self._read_tput_row()
         applied = self._read_last_applied_modes()
         tput_modes = self._parse_tput_modes(row.get("asmModes", ""))
+        asm_state = self._parse_asm_state(row.get("asmState", ""))
+        kpm = self._read_kpm_asm() if self.kind == "asm" else None
+        if kpm is not None:
+            kpm_modes, kpm_state, kpm_power = kpm
+        else:
+            kpm_modes, kpm_state, kpm_power = {}, {}, None
         ue_rows = self._read_latest_ue_rows()
         occ = self._path_occupancy(ue_rows)
         all_sats = [self._row_float(item, "sat") for item in ue_rows]
@@ -465,15 +529,31 @@ class AsmEnv(NsOranEnv):
 
         values = []
         for cell_id in self.mmwave_cell_ids:
-            mode = int(applied.get(cell_id, tput_modes.get(cell_id, 1)))
+            if cell_id in kpm_modes:
+                mode = int(kpm_modes[cell_id])
+            else:
+                mode = int(applied.get(cell_id, tput_modes.get(cell_id, 1)))
             one_hot = [0.0] * 6
             if 1 <= mode <= 6:
                 one_hot[mode - 1] = 1.0
+            if cell_id in kpm_state:
+                phase, target = kpm_state[cell_id]
+            else:
+                phase, target = asm_state.get(cell_id, (0, mode))
+            phase_hot = [0.0, 0.0, 0.0]
+            if 0 <= int(phase) <= 2:
+                phase_hot[int(phase)] = 1.0
+            target_hot = [0.0] * 6
+            if 1 <= int(target) <= 6:
+                target_hot[int(target) - 1] = 1.0
             n_ue = occ["nUe"].get(cell_id, 0)
             cell_sats = occ["sats"].get(cell_id, [])
             sat_cell = float(np.mean(cell_sats)) if cell_sats else 1.0
             rlc_frac, _prb_frac = self._du_occupancy(cell_id)
             values.extend(one_hot)
+            if self.kind == "asm":
+                values.extend(phase_hot)
+                values.extend(target_hot)
             values.extend((
                 float(np.clip(n_ue / n_total, 0.0, 1.0)),
                 float(np.clip(occ["offered"].get(cell_id, 0.0) / max(self.offered_kbps, 1e-6), 0.0, 1.0)),
@@ -499,6 +579,8 @@ class AsmEnv(NsOranEnv):
             "mmwKbps": mmw_kbps,
             "lteFrac": lte_frac,
             "appKbps": app_kbps,
+            "asmPowerW": kpm_power if kpm_power is not None else self._row_float(row, "asmPowerW"),
+            "asmState": asm_state,
             "nUe": occ["nUe"],
             "nUeLte": occ["nUeLte"],
             **{name: float(obs[i]) for i, name in enumerate(self.COLUMNS)},
@@ -547,7 +629,10 @@ class AsmEnv(NsOranEnv):
 
     def _compute_reward(self) -> float:
         modes = self._current_modes()
-        p_mmw = sum(self._cell_power(modes[cid]) for cid in self.mmwave_cell_ids)
+        if self.kind == "asm":
+            p_mmw = float(self.last_metrics.get("asmPowerW", 0.0) or 0.0)
+        else:
+            p_mmw = sum(self._cell_power(modes[cid]) for cid in self.mmwave_cell_ids)
         lte_kbps = float(self.last_metrics.get("lteKbps", 0.0) or 0.0)
         p_lte, lte_duty = self._lte_power(lte_kbps)
         power = p_mmw + p_lte

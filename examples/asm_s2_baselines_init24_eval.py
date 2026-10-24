@@ -29,13 +29,13 @@ def main():
         optimized=False,
         skip_configuration=True,
         omega=0.0,
-        kind="asm",
+        kind="duty_mode",
         simTime=3.3,
         seed=0,
         n_eval_episodes=2,
     )
     cfg = load_config(args)
-    policies = policy_actions(2, "asm")
+    policies = policy_actions(2, "duty_mode")
     summaries = {}
     all_rows = []
     for name, choose in policies.items():
@@ -49,7 +49,7 @@ def main():
             log_dir,
             args.n_eval_episodes,
             args.seed,
-            "asm",
+            "duty_mode",
             init_modes=list(INIT),
         )
         summaries[name] = summary

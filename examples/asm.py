@@ -2,7 +2,7 @@
 """Toy Gym loop: per-gNB ASM on scenario-asm-verify.
 
 Default layout: UEs clustered at each mmWave gNB. --kind on_off jumps
-ASM 1/6 with no sequential constraint; --kind asm walks ASM 1-6 by ±1.
+mode 1/6 with no sequential constraint; --kind duty_mode walks modes 1-6 by ±1.
 """
 import argparse
 import json
@@ -42,7 +42,12 @@ def main():
             "/home/pknu-boo/nsorangym_mmwave_test_0914/nsorangym_mmwave",
         ),
     )
-    parser.add_argument("--kind", choices=("on_off", "asm", "duty"), default="asm")
+    parser.add_argument(
+        "--kind",
+        choices=("on_off", "duty_mode", "asm", "duty"),
+        default="duty_mode",
+        help="duty_mode is the symbol-duty controller. asm and duty are previous names.",
+    )
     parser.add_argument("--num_steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--optimized", action="store_true")

@@ -37,7 +37,7 @@ def main():
         optimized=False,
         skip_configuration=True,
         omega=0.0,
-        kind="asm",
+        kind="duty_mode",
         simTime=3.3,
         seed=0,
         n_eval_episodes=2,
@@ -50,7 +50,7 @@ def main():
         log_dir = os.path.join(out, f"t{steps}")
         print(f"\n===== ppo all-on start steps={steps} =====", flush=True)
         rows, summary = eval_ppo(
-            args, cfg, model, stats, log_dir, args.n_eval_episodes, "asm", init_modes=None
+            args, cfg, model, stats, log_dir, args.n_eval_episodes, "duty_mode", init_modes=None
         )
         summary = dict(summary)
         summary["timesteps"] = int(steps)

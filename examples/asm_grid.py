@@ -61,7 +61,7 @@ def eval_pair(payload: dict):
         omega=payload["omega"],
         skip_configuration=payload["skip_configuration"],
         optimized=payload["optimized"],
-        kind="asm",
+        kind="duty_mode",
     )
     rows, summary = run_policy(
         name,
@@ -71,7 +71,7 @@ def eval_pair(payload: dict):
         os.path.join(payload["output_folder"], f"eval_{name}"),
         payload["n_eval_episodes"],
         payload["seed"],
-        "asm",
+        "duty_mode",
     )
     return name, rows, summary
 
@@ -102,7 +102,7 @@ def main():
         omega=args.omega,
         skip_configuration=args.skip_configuration,
         optimized=args.optimized,
-        kind="asm",
+        kind="duty_mode",
     )
     pairs = mode_pairs()
     n_workers = max(1, min(int(args.n_workers), len(pairs)))

@@ -115,7 +115,11 @@ class SQLiteDatabaseAPI:
         "L1M.RS-SINR.Bin127.UEID": "REAL",
         "DRB.BufferSize.Qos.UEID": "REAL",
         "DRB.UEThpDl.UEID": "REAL",
-        "DRB.UEThpDlPdcpBased.UEID": "REAL"
+        "DRB.UEThpDlPdcpBased.UEID": "REAL",
+        "ASM.Mode": "INTEGER",
+        "ASM.Phase": "INTEGER",
+        "ASM.Target": "INTEGER",
+        "ASM.PowerW": "REAL",
     }
 
     debug: bool = False

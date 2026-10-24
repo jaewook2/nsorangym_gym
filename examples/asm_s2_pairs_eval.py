@@ -32,7 +32,7 @@ def eval_pair(payload):
         os.path.join(payload["out"], f"eval_{name}"),
         2,
         0,
-        "asm",
+        "duty_mode",
         init_modes=[left, right],
     )
     return name, rows, summary
@@ -48,7 +48,7 @@ def main():
         optimized=False,
         skip_configuration=True,
         omega=0.0,
-        kind="asm",
+        kind="duty_mode",
     )
     cfg = load_config(args)
     chosen = pairs()
