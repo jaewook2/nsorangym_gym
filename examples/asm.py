@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Toy Gym loop: per-gNB ASM on scenario-asm-verify.
+"""ASM component state machine on scenario-asm-verify.
 
-Default layout: UEs clustered at each mmWave gNB. --kind on_off jumps
-mode 1/6 with no sequential constraint; --kind duty_mode walks modes 1-6 by ±1.
+Actions choose a target: Active, ASM1, ASM2, ASM3, ASM4, or OFF.
+ns-3 turns PA, RF, baseband, and control on or off in order.
+Duty-cycle control is duty.py, not this script.
 """
 import argparse
 import json
@@ -16,17 +17,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../s
 from environments.asm_env import AsmEnv
 
 MODE_NAME = {
-    1: "100% mmWave data",
-    2: "75% mmWave data",
-    3: "50% mmWave data",
-    4: "25% mmWave data",
-    5: "0% mmWave data (cell on)",
-    6: "TurnOff / LTE fallback",
+    1: "Active",
+    2: "ASM1",
+    3: "ASM2",
+    4: "ASM3",
+    5: "ASM4",
+    6: "OFF",
 }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Random per-gNB ASM toy example")
+    parser = argparse.ArgumentParser(description="Random per-gNB ASM state-machine example")
     parser.add_argument(
         "--config",
         default=os.path.join(
@@ -34,19 +35,13 @@ def main():
             "../src/environments/scenario_configurations/asm_use_case.json",
         ),
     )
-    parser.add_argument("--output_folder", default="output_asm")
+    parser.add_argument("--output_folder", default="output_asm_state")
     parser.add_argument(
         "--ns3_path",
         default=os.environ.get(
             "NS3_PATH",
             "/home/pknu-boo/nsorangym_mmwave_test_0914/nsorangym_mmwave",
         ),
-    )
-    parser.add_argument(
-        "--kind",
-        choices=("on_off", "duty_mode", "asm", "duty"),
-        default="duty_mode",
-        help="duty_mode is the symbol-duty controller. asm and duty are previous names.",
     )
     parser.add_argument("--num_steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
@@ -65,70 +60,56 @@ def main():
         optimized=args.optimized,
         skip_configuration=args.skip_configuration,
         verbose=True,
-        kind=args.kind,
+        kind="asm",
     )
     rng = np.random.default_rng(args.seed)
     print("Launch reset ", end="", flush=True)
     obs, info = env.reset()
     print("done", flush=True)
     print(f"First obs {dict(zip(env.COLUMNS, obs.tolist()))}")
-    print(f"kind={env.kind} sequential={env.sequential} cells {env.mmwave_cell_ids} "
+    print(f"kind={env.kind} cells {env.mmwave_cell_ids} "
           f"ues={env.n_ues} offeredKbps={env.offered_kbps} sim_path {env.sim_path}")
+    if env.kind != "asm":
+        print("ASM example did not enable the state machine", flush=True)
+        env.close()
+        sys.exit(1)
 
-    matches = 0
-    evaluated = 0
-    prev_modes = None
+    completed = 0
+    saw_target = False
     try:
         for step in range(1, args.num_steps + 1):
-            if env.kind == "on_off":
-                action = rng.integers(0, 2, size=env.n_gnbs)
-            elif prev_modes is None:
-                action = np.zeros(env.n_gnbs, dtype=int)
-            else:
-                action = np.array(
-                    [int(np.clip(int(m) - 1 + int(rng.integers(-1, 2)), 0, 5)) for m in prev_modes],
-                    dtype=int,
-                )
+            action = rng.integers(0, 6, size=env.n_gnbs)
             modes = env._modes_from_action(action)
             pretty = ", ".join(
-                f"cell {cid} ASM {mode} ({MODE_NAME[mode]})"
+                f"cell {cid} target {mode} ({MODE_NAME[mode]})"
                 for cid, mode in zip(env.mmwave_cell_ids, modes)
             )
             print(f"Step {step} {pretty} ", end="", flush=True)
             obs, reward, terminated, truncated, info = env.step(action)
             print("done", flush=True)
             metrics = env.last_metrics
-            applied = metrics.get("appliedModes", {})
-            tput_modes = metrics.get("tputModes", {})
-            commanded = dict(zip(env.mmwave_cell_ids, modes))
-            cell_ok = True
-            for cid, mode in commanded.items():
-                seen = applied.get(cid)
-                if seen is None:
-                    seen = tput_modes.get(cid, 1)
-                cell_ok = cell_ok and int(seen) == mode
-            if commanded:
-                evaluated += 1
-                matches += int(cell_ok)
+            state = metrics.get("asmState") or {}
             print(
-                f"  commanded={commanded} applied={applied} tput={tput_modes} "
+                f"  target={dict(zip(env.mmwave_cell_ids, modes))} "
+                f"state={state} applied={metrics.get('appliedModes')} "
                 f"nUe={metrics.get('nUe')} nUeLte={metrics.get('nUeLte')} "
                 f"appKbps={metrics.get('appKbps', 0):.1f} "
-                f"eeNorm={metrics.get('eeNorm', 0):.3f} "
-                f"pMmw={metrics.get('pMmw', 0):.2f} "
-                f"pLte={metrics.get('pLte', 0):.2f} "
-                f"satP5={metrics.get('satP5', 0):.3f} "
-                f"reward={reward:.3f} match={cell_ok} bothOff={metrics.get('bothOff')}"
+                f"asmPowerW={metrics.get('asmPowerW', 0):.3f} "
+                f"reward={reward:.3f}"
             )
             print(f"  terminated={terminated} truncated={truncated} ts={env.last_timestamp}")
-            prev_modes = modes
+            completed += 1
+            saw_target = saw_target or any(
+                str(key).startswith("target") and float(value) > 0.0
+                for key, value in metrics.items()
+            )
             if terminated or truncated:
                 break
     finally:
         env.close()
 
-    print(f"Mode match {matches}/{evaluated}")
-    if evaluated == 0 or matches < evaluated:
+    print(f"ASM steps {completed} target_observed={saw_target}")
+    if completed == 0 or not saw_target:
         sys.exit(1)
 
 

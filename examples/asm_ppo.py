@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Train PPO on AsmEnv until the policy settles, then compare baselines.
+"""Train PPO on the ASM component state machine.
 
-Two techniques (separate action spaces, same state/reward):
-  on_off     mode 1 vs 6 per mmWave cell, no sequential constraint
-  duty_mode  modes 1-6 per mmWave cell, each step may change by at most ±1.
-             duty is a previous name for this symbol-duty controller.
-  asm        target Active, ASM1, ASM2, ASM3, ASM4, OFF. ns-3 transitions.
+Running this file trains ASM targets Active, ASM1, ASM2, ASM3, ASM4, and OFF.
+Duty-cycle training is duty_ppo.py. Other scripts import the helpers here.
 """
 import argparse
 import json
@@ -50,8 +47,8 @@ class SafeNs3Wrapper(gym.Wrapper):
             return obs, 0.0, False, True, {"error": str(exc)}
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="PPO + baseline comparison on ASM")
+def parse_args(default_kind="asm", choices=("on_off", "duty_mode", "asm", "duty", "both")):
+    parser = argparse.ArgumentParser(description="PPO + baseline comparison")
     parser.add_argument(
         "--config",
         default=os.path.join(
@@ -61,9 +58,10 @@ def parse_args():
     )
     parser.add_argument(
         "--kind",
-        choices=("on_off", "duty_mode", "asm", "duty", "both"),
-        default="both",
-        help="duty_mode is the symbol-duty controller. asm is the component state machine. duty is a previous name for duty_mode.",
+        choices=choices,
+        default=default_kind,
+        help="asm is the component state machine. duty_mode is symbol duty. "
+             "Run duty_ppo.py for duty-cycle training.",
     )
     parser.add_argument("--output_folder", default="examples/output_asm_s1_onoff_overlap")
     parser.add_argument(
@@ -612,8 +610,9 @@ def write_table(summaries: dict, path: str):
     print(f"wrote {path}", flush=True)
 
 
-def main():
-    args = parse_args()
+def main(args=None):
+    if args is None:
+        args = parse_args(default_kind="asm", choices=("asm",))
     os.environ.setdefault("NS3_SKIP_BUILD", "1")
     cfg = load_config(args)
     os.makedirs(args.output_folder, exist_ok=True)

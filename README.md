@@ -2,7 +2,7 @@
 
 이 문서는 `nsorangym_gym`의 `asm_state` 브랜치용입니다. Gym이 mmWave 셀의 ASM 목표를 지정하고, ns-3가 PA, RF, 베이스밴드, 제어 블록을 순서대로 켜거나 끕니다.
 
-데이터 심볼을 100%, 75%, 50%, 25%로 바로 바꾸는 듀티 사이클 제어는 이 실습이 아닙니다. 그 설명은 `asm_duty` 브랜치에 있습니다. 이 브랜치에도 `--kind on_off`와 `--kind duty_mode`가 있지만, 그것은 듀티 제어입니다. ASM 실습은 `--kind asm`만 사용합니다.
+데이터 심볼 비율을 바로 바꾸는 듀티 사이클은 `examples/duty.py`입니다. ASM 상태기계는 `examples/asm.py`입니다. 예제를 한 번 실행했을 때 출력과 파일을 읽는 방법은 [toy_example.md](toy_example.md)에 있습니다.
 
 구성은 다음 저장소입니다. mmWave의 `contrib`는 비어 있으므로 nsoran을 그 안에 받습니다.
 
@@ -102,7 +102,7 @@ cd ~/nsorangym/nsorangym_gym
 
 ## 3. 실습
 
-`examples/asm.py`의 기본 `--kind`는 `duty_mode`입니다. ASM 실습에서는 반드시 `--kind asm`을 줍니다.
+`examples/asm.py`는 ASM 상태기계만 실행합니다. `--kind` 인자는 없습니다. 출력 줄을 읽는 방법은 [toy_example.md](toy_example.md)를 봅니다.
 
 ```bash
 cd ~/nsorangym/nsorangym_gym
@@ -123,7 +123,6 @@ cp src/environments/scenario_configurations/asm_use_case.json /tmp/asm_state_lab
 python examples/asm.py \
   --config /tmp/asm_state_lab.json \
   --ns3_path "$NS3_PATH" \
-  --kind asm \
   --num_steps 4 \
   --output_folder examples/output_asm_state_lab
 ```
@@ -148,7 +147,6 @@ OFF에 도달하면 해당 mmWave 셀의 트래픽이 LTE 처리량으로 이동
 python examples/asm_ppo.py \
   --config /tmp/asm_state_lab.json \
   --ns3_path "$NS3_PATH" \
-  --kind asm \
   --n_envs 1 \
   --n_steps 8 \
   --batch_size 8 \
@@ -158,7 +156,7 @@ python examples/asm_ppo.py \
   --output_folder examples/output_asm_state_ppo_lab
 ```
 
-`asm_ppo.py`의 기본 `--kind`는 `both`이며, 이것은 `on_off`와 `duty_mode`입니다. ASM 학습에는 `--kind asm`이 필요합니다.
+`asm_ppo.py`는 ASM 상태기계만 학습합니다. 듀티 사이클 학습은 `examples/duty_ppo.py`입니다.
 
 `n_steps * n_envs`는 `batch_size`로 나누어 떨어져야 합니다. 위 예는 8 × 1 = 8입니다.
 
@@ -217,7 +215,7 @@ python examples/asm_ppo.py \
 ## 6. 확인할 문제
 
 - `Cannot find scenario-asm-verify`: `NS3_PATH`가 mmWave 저장소 루트가 아니거나, 그 안에서 `./ns3 build scenario-asm-verify`가 끝나지 않았습니다.
-- 로그에 듀티 비율만 보이고 ASM target이 없음: `--kind asm`을 빼먹었습니다. 기본값은 듀티 제어입니다.
+- 로그에 듀티 비율만 보이고 ASM target이 없음: `duty.py`를 실행한 것입니다. ASM은 `asm.py`입니다.
 - `n_steps*n_envs must be divisible by batch_size`: 세 숫자를 다시 맞춥니다.
 - 세마포어 대기 후 바로 종료: `useSemaphores`가 1인지, 이전 실험 프로세스가 남아 있지 않은지 확인합니다.
 - ns-3 로그에 `Connecting to server at 10.244.0.240:36422`가 보일 수 있습니다. 실습 제어는 CSV와 세마포어로 이루어집니다. 긴 실행 중 이 접속 실패로 프로세스가 죽으면 강사에게 알립니다.
